@@ -1,0 +1,448 @@
+```sas
+options validvarname=V7;
+
+
+/*======================================================================
+  MACRO TO CHANGE COLUMN TYPE TO NUMBER FORMAT
+======================================================================*/
+%macro changeColFormat2Num(table_name,col_list,format_new);
+
+	%do i=1 %to %eval(%sysfunc(countc(&col_list.,"|"))+1);
+		%let col_name = %sysfunc(scan(&col_list.,&i.,"|"));
+/*		%put &col_name.;*/
+
+		data &table_name.(drop= temp);
+			set &table_name.(rename= &col_name. = temp);
+			format &col_name. &format_new.;
+			&col_name.=(temp*1.0);
+		run;
+
+	%end;
+
+%mend changeColFormat2Num;
+
+
+/*======================================================================
+  MACRO TO CHANGE COLUMN TYPE TO CHARACTER FORMAT
+======================================================================*/
+%macro changeColFormat2Char(table_name,col_list,format_new);
+
+	%do i=1 %to %eval(%sysfunc(countc(&col_list.,"|"))+1);
+		%let col_name = %sysfunc(scan(&col_list.,&i.,"|"));
+/*		%put &col_name.;*/
+
+		proc sql noprint;
+			select type, length+2 into :col_type, :col_length
+			from sashelp.vcolumn 
+			where libname = 'WORK' 
+				and memname = upcase("&table_name.")
+				and Name = "&col_name.";
+		quit;
+		
+		%if %qupcase(&col_type.)NE CHAR %then %do;
+
+			data &table_name.(drop= temp);
+				set &table_name.(rename= &col_name. = temp);
+				format &col_name. $&col_length..;
+				&col_name.=Cats(temp);
+			run;
+
+		%end;
+
+	%end;
+
+%mend changeColFormat2Char;
+
+
+/*======================================================================
+  IMPORT NEW LIABILITY TEMPLATE
+======================================================================*/
+
+/*PROC IMPORT DATAFILE='/ere/local/shared/actuarial/Share/Claims/WPC/Adj Prod by Liability_Template.xlsx' */
+/*	DBMS=XLSX */
+/*	REPLACE */
+/*	OUT=both1;*/
+/*	sheet=  "liabiltyWLHours";*/
+/*	GETNAMES=yes; */
+/*RUN;*/
+
+
+/* UPDATED: Testing 2 Liability Template */
+
+PROC IMPORT DATAFILE='/ere/local/shared/actuarial/Share/Claims/WPC/TESTING 2/Adj Prod by Liability_Template.xlsx' 
+	DBMS=XLSX 
+	REPLACE 
+	OUT=both1;
+
+	sheet=  "liabiltyWLHours";
+	GETNAMES=yes; 
+
+RUN;
+
+
+/*======================================================================
+  CHARACTER FIELD CONVERSIONS
+  UPDATED FOR NEW STANDARDIZED TEMPLATE COLUMN NAMES
+======================================================================*/
+
+/* UPDATED:
+   AdjusterRegion      -> REGION
+   AdjusterTeamBranch  -> RPT_ENTITY
+   SupvNum             -> SPVS_EMP_ID
+   SupvNam             -> SPVS_NM
+   AdjPosition         -> JOB_TTL_FULL
+   AdjNm               -> EMP_NM
+   AdjNumber           -> EMP_ID
+   EmpPayPeriod        -> EmpIDPPE
+*/
+
+%changeColFormat2Char(
+	BOTH1,
+	REGION|RPT_ENTITY|SPVS_EMP_ID|SPVS_NM|JOB_TTL_FULL|EMP_NM|EMP_ID|
+	MaskEmpl|PayperiodEnd|EmpIDPPE|
+	StartDateinPosition|HireDate,
+	$50.
+);
+
+
+/*======================================================================
+  NUMERIC EXPOSURE FIELD CONVERSIONS
+  NO BUSINESS LOGIC CHANGE
+======================================================================*/
+
+%changeColFormat2Num(
+	Both1,
+	OldClaims|OldBIExposures|NewInjuryExposures|OpenInjuryExposures|
+	CompletedInjuryExposures|NewNonInjuryExposures|OpenNonInjuryExposures|
+	CompletedNonInjuryExposures,
+	Best8.
+);
+
+
+/*======================================================================
+  HOURS FIELD CONVERSIONS
+  UPDATED: TotalHoursWorked -> Total_Hours
+======================================================================*/
+
+%changeColFormat2Num(
+	Both1,
+	Total_Hours|TotalRegHrsPaid|TotalOTHrsPaid|TotalPTOHrsPaid,
+	Best8.2
+);
+
+
+/*======================================================================
+  NEW TEMPLATE COLUMNS
+  These fields already exist in the Excel template.
+
+  No values are being populated or calculated here.
+  They are simply carried forward through the SAS process.
+
+  ADDED / RETAINED:
+      JOB_TTL
+      USR_NTRL_ID
+      DISCIPLINE
+      DISC_SEC
+      WRK_CLASS
+      LEADER_NM
+      LEADER_EMP_ID
+      PRIM_ROL_NM
+      EmpIDPPE_dt
+      TotalOffSiteBus
+
+  MaskEmpl is also retained unchanged.
+======================================================================*/
+
+
+/*======================================================================
+  PAY-PERIOD DATE RANGE
+
+  OLD LOGIC PRESERVED FOR REFERENCE
+
+  The original code used PayPeriodEnd_1.
+
+  Based on the current standardized template, the assumption is:
+
+      PayPeriodEnd_1 = PayperiodEnd_dt
+
+  The original logic is therefore COMMENTED OUT rather than deleted.
+======================================================================*/
+
+/*
+proc sql noprint;
+	select max(PayPeriodEnd_1) 
+	into :enddate
+	from both1;
+quit;
+
+proc sql noprint;
+	select min(PayPeriodEnd_1) 
+	into :startdate
+	from both1;
+quit;
+*/
+
+
+/*======================================================================
+  NEW PAY-PERIOD DATE SECTION
+  ASSUMPTION:
+      PayPeriodEnd_1 = PayperiodEnd_dt
+
+  PayperiodEnd_dt is used directly as the SAS date field.
+======================================================================*/
+
+proc sql noprint;
+
+	select max(PayperiodEnd_dt) 
+	into :enddate
+	from both1;
+
+quit;
+
+
+proc sql noprint;
+
+	select min(PayperiodEnd_dt) 
+	into :startdate
+	from both1;
+
+quit;
+
+
+%put NOTE: START DATE = &startdate;
+%put NOTE: END DATE = &enddate;
+
+
+/*======================================================================
+  CUTOFF DATE
+======================================================================*/
+
+/* Original hard-coded cutoff logic preserved */
+
+/* %let cutoff=%sysfunc(inputn(22657, JULIANw.)); */
+/* %put &cutoff; */
+
+
+/*======================================================================
+  UPDATED CUTOFF DATE
+  Uses PayperiodEnd_dt directly because it is already the SAS date field.
+======================================================================*/
+
+%let cutoff=&startdate;
+
+%put NOTE: CUTOFF = &cutoff;
+
+
+/*======================================================================
+  EXISTING FROM / TO DATE LOGIC
+
+  These variables are preserved because they are part of the existing
+  WPC process. They are not used to change the business logic.
+======================================================================*/
+
+%let from_date_temp=%sysfunc(INTNX(day,&startdate,-14));
+%let from_date=%unquote(%str(%'&from_date_temp%'));
+
+%put NOTE: FROM DATE = &from_date;
+
+
+%let to_date_temp=&enddate;
+%let to_date=%unquote(%str(%'&to_date_temp%'));
+
+%put NOTE: TO DATE = &to_date;
+
+
+/*======================================================================
+  DUPLICATE CHECK
+  UPDATED: Use EMP_ID and PayperiodEnd from new template.
+======================================================================*/
+
+proc sql;
+
+	create table dups as 
+	select *
+	from both1
+	group by 'EMP_ID'n, 'PayperiodEnd'n
+	having count(*) gt 1;
+
+quit;
+
+
+/*======================================================================
+  CREATE WORKING DATASET
+======================================================================*/
+
+data both;
+
+	set both1;
+
+
+	/* Existing date format logic */
+	format payperioddate mmddyy10.;
+
+
+	/*==================================================================
+	  KEEP REQUIRED TEMPLATE FIELDS
+
+	  UPDATED FIELD NAMES:
+	      AdjusterRegion      -> REGION
+	      AdjusterTeamBranch  -> RPT_ENTITY
+	      SupvNum             -> SPVS_EMP_ID
+	      SupvNam             -> SPVS_NM
+	      AdjPosition         -> JOB_TTL_FULL
+	      AdjNumber           -> EMP_ID
+	      AdjNm               -> EMP_NM
+	      EmpPayPeriod        -> EmpIDPPE
+	      TotalHoursWorked    -> Total_Hours
+
+	  NEW TEMPLATE FIELDS ARE CARRIED FORWARD UNCHANGED.
+	==================================================================*/
+
+	keep
+		'REGION'n
+		'RPT_ENTITY'n
+		'SPVS_EMP_ID'n
+		'SPVS_NM'n
+		'JOB_TTL_FULL'n
+		'JOB_TTL'n
+		'USR_NTRL_ID'n
+		'EMP_ID'n
+		'EMP_NM'n
+		'MaskEmpl'n
+		'DISCIPLINE'n
+		'DISC_SEC'n
+		'WRK_CLASS'n
+		'LEADER_NM'n
+		'LEADER_EMP_ID'n
+		'PRIM_ROL_NM'n
+		'PayperiodEnd'n
+		'EmpIDPPE'n
+		'PayperiodEnd_dt'n
+		'EmpIDPPE_dt'n
+		'Total_Hours'n
+		'TotalRegHrsPaid'n
+		'TotalOTHrsPaid'n
+		'TotalPTOHrsPaid'n
+		'TotalOffSiteBus'n
+		'StartDateinPosition'n
+		'HireDate'n
+		'OldClaims'n
+		'OldBIExposures'n
+		'NewInjuryExposures'n
+		'OpenInjuryExposures'n
+		'CompletedInjuryExposures'n
+		'NewNonInjuryExposures'n
+		'OpenNonInjuryExposures'n
+		'CompletedNonInjuryExposures'n
+		payperioddate
+	;
+
+
+	/*==================================================================
+	  EXISTING PAY-PERIOD CONVERSION LOGIC
+
+	  PRESERVED.
+
+	  This uses the original PayperiodEnd field and therefore has not
+	  been removed or rewritten.
+	==================================================================*/
+
+	payperiodtemp = Put('PayperiodEnd'n,8.);
+
+	payperioddate =
+		mdy(
+			input(substr(payperiodtemp,5,2),2.),
+			input(substr(payperiodtemp,7,2),2.),
+			input(substr(payperiodtemp,1,4),4.)
+		);
+
+run;
+
+
+/*======================================================================
+  FILL MISSING EXPOSURE VALUES WITH ZERO
+
+  EXISTING WPC LOGIC PRESERVED.
+======================================================================*/
+
+data both (drop = i);
+
+	set both;
+
+	array FillInZeros[*]
+		NewInjuryExposures
+		-- CompletedNonInjuryExposures;
+
+	do i=1 to hbound(FillInZeros);
+
+		if FillInZeros[i]=. then
+			FillInZeros[i]=0;
+
+	end;
+
+run;
+
+
+/*======================================================================
+  FINAL LIABILITY OUTPUT
+======================================================================*/
+
+PROC SQL;
+
+	CREATE TABLE LiabAdj.hcoutput As
+
+		Select
+
+			/*==========================================================
+			  UPDATED TEMPLATE FIELD NAMES
+			==========================================================*/
+
+			'REGION'n,
+			'RPT_ENTITY'n,
+			'JOB_TTL_FULL'n,
+			'EMP_ID'n,
+
+			payperioddate,
+
+			/*==========================================================
+			  EXPOSURE FIELDS
+			==========================================================*/
+
+			NewInjuryExposures,
+			OpenInjuryExposures,
+			CompletedInjuryExposures,
+			NewNonInjuryExposures,
+			OpenNonInjuryExposures,
+			CompletedNonInjuryExposures,
+
+			/*==========================================================
+			  HOURS
+			  UPDATED: TotalHoursWorked -> Total_Hours
+			==========================================================*/
+
+			'Total_Hours'n,
+			'TotalRegHrsPaid'n,
+			'TotalOTHrsPaid'n,
+			'TotalPTOHrsPaid'n,
+
+			/*==========================================================
+			  SUPERVISOR
+			  UPDATED FIELD NAMES
+			==========================================================*/
+
+			'SPVS_EMP_ID'n,
+			'SPVS_NM'n,
+
+			/*==========================================================
+			  EMPLOYEE
+			  UPDATED FIELD NAME
+			==========================================================*/
+
+			'EMP_NM'n
+
+		From both 
+
+		where payperioddate >= &cutoff;
+
+QUIT;
+```
